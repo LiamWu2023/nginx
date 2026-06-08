@@ -1,0 +1,63 @@
+name: build-and-deploy
+on:
+  push:
+    branches: [main, master]    # 该仓库默认分支可能是 master,两者都触发
+    paths:                      # 只有这些文件变了才构建,改源码不触发
+      - 'Dockerfile'
+      - 'index.html'
+      - '.github/workflows/ci.yaml'
+
+concurrency:
+  group: deploy-nonprod
+  cancel-in-progress: false
+
+env:
+  REGISTRY: crm-nonprod-hb.lifebyte.dev
+  IMAGE: crm-nonprod-hb.lifebyte.dev/crm/nginx
+
+jobs:
+  build-push:
+    runs-on: [self-hosted]
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag (git short sha)
+        id: meta
+        run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Harbor
+        run: |
+          echo "${{ secrets.HARBOR_ROBOT_TOKEN }}" | \
+            docker login "$REGISTRY" -u "${{ secrets.HARBOR_ROBOT_USER }}" --password-stdin
+
+      - name: Build & push
+        run: |
+          docker build -t "$IMAGE:${{ steps.meta.outputs.tag }}" .
+          docker push "$IMAGE:${{ steps.meta.outputs.tag }}"
+
+  bump-gitops:
+    needs: build-push
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: LiamWu2023/crm-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+
+      - name: Bump image tag in overlay
+        run: |
+          cd nginx/overlays/nonprod
+          sed -i "s/^\(\s*newTag:\).*/\1 \"${{ needs.build-push.outputs.tag }}\"/" kustomization.yaml
+          echo "--- after bump ---"; grep -A1 "crm/nginx" kustomization.yaml
+
+      - name: Commit & push
+        run: |
+          git config user.name  "ci-bot"
+          git config user.email "ci-bot@lifebyte.io"
+          git add -A
+          git diff --cached --quiet && { echo "no change"; exit 0; }
+          git commit -m "deploy(nginx/nonprod): ${{ needs.build-push.outputs.tag }}"
+          git push || (git pull --rebase && git push)
