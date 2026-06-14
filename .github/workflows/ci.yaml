@@ -26,11 +26,13 @@ jobs:
       - name: Set image tag (git short sha)
         id: meta
         run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
       - name: Login to Harbor
         env:
+          # 通过 env 传入,避免机器人名里的 $ 在双引号中被 shell 展开
           HARBOR_USER: ${{ secrets.HARBOR_ROBOT_USER }}
           HARBOR_TOKEN: ${{ secrets.HARBOR_ROBOT_TOKEN }}
-          run: echo "$HARBOR_TOKEN" | docker login "$REGISTRY" -u "$HARBOR_USER" --password-stdin
+        run: echo "$HARBOR_TOKEN" | docker login "$REGISTRY" -u "$HARBOR_USER" --password-stdin
 
       - name: Build & push
         run: |
